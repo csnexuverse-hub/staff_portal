@@ -1,0 +1,38 @@
+# Render Blueprint - optional. Lets Render create the service with the right
+# settings automatically (Dashboard -> New -> Blueprint -> pick this repo).
+services:
+  - type: web
+    name: staff-portal
+    runtime: node
+    plan: starter
+    buildCommand: cd backend && npm ci --omit=dev
+    startCommand: node backend/index.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MONGO_URI
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: BOOTSTRAP_SUPERADMIN_EMAIL
+        sync: false
+      - key: REQUIRE_APPROVAL
+        value: "true"
+      - key: REGISTRATION_ENABLED
+        value: "true"
+      - key: ALLOWED_EMAIL_DOMAINS
+        sync: false
+      - key: EMAIL_SERVICE
+        value: gmail
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
