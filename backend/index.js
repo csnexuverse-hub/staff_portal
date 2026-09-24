@@ -202,8 +202,8 @@ app.get("/api/health", (req, res) => {
 
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/users", require("./routes/users"));
-app.use("/api/works", require("./routes/works"));
-app.use("/api/attendance", require("./routes/attendance"));
+const attendanceRoutes = require("./routes/attendance");
+app.use("/api/attendance", attendanceRoutes);
 app.use("/api/meetings", require("./routes/meetings"));
 app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/aitools", require("./routes/aitools"));
@@ -296,5 +296,18 @@ process.on("unhandledRejection", (reason) => {
   console.error("[unhandledRejection]", reason);
 });
 
+// ---------------------------------------------------------------------------
+// 8-Hour Shift Automatic Checkout Background Job (runs every 60s)
+// ---------------------------------------------------------------------------
+const AUTO_CHECKOUT_INTERVAL_MS = 60 * 1000;
+setInterval(() => {
+  if (mongoose.connection.readyState === 1 && typeof attendanceRoutes.autoCheckoutExpiredRecords === "function") {
+    attendanceRoutes.autoCheckoutExpiredRecords({}, io).catch((err) => {
+      console.error("[autoCheckout:timer]", err && err.message ? err.message : err);
+    });
+  }
+}, AUTO_CHECKOUT_INTERVAL_MS);
+
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+

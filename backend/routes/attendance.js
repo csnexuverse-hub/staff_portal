@@ -53,26 +53,94 @@ router.post("/checkin", auth, async (req, res) => {
   }
 });
 
+const SHIFT_DURATION_MS = 8 * 60 * 60 * 1000; // 8-hour shift
+
+// Automatically close any open attendance records older than 8 hours
+async function autoCheckoutExpiredRecords(queryFilter = {}, io = null) {
+  try {
+    const cutoff = new Date(Date.now() - SHIFT_DURATION_MS);
+    const openRecords = await Attendance.find({
+      ...queryFilter,
+      checkIn: { $exists: true, $ne: null, $lte: cutoff },
+      $or: [{ checkOut: { $exists: false } }, { checkOut: null }],
+    }).populate("user", "assignedAdmin");
+
+    for (const record of openRecords) {
+      record.checkOut = new Date(record.checkIn.getTime() + SHIFT_DURATION_MS);
+      await record.save();
+      if (io) {
+        const userIdStr = record.user?._id?.toString() || record.user?.toString();
+        if (userIdStr) {
+          io.to(userIdStr).emit("attendance:update", {
+            user: userIdStr,
+            checkOut: record.checkOut,
+            autoCheckout: true,
+          });
+          const adminId = record.user?.assignedAdmin?.toString();
+          if (adminId) {
+            io.to(adminId).emit("attendance:update", {
+              user: userIdStr,
+              checkOut: record.checkOut,
+              autoCheckout: true,
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[attendance:autoCheckout]", err && err.message ? err.message : err);
+  }
+}
+
 // Check out
 router.post("/checkout", auth, async (req, res) => {
   try {
     const today = new Date().toISOString().split("T")[0];
-    const attendance = await Attendance.findOne({
+    let attendance = await Attendance.findOne({
       user: req.user.id,
-      date: today,
-    });
-    if (attendance) {
-      attendance.checkOut = new Date();
-      await attendance.save();
-      // Emit attendance update
-      try {
-        const io = req.app.locals.io;
-        if (io)
-          io.to(req.user.id.toString()).emit("attendance:update", {
-            user: req.user.id,
-            checkOut: attendance.checkOut,
-          });
-        // Also emit to assigned admin
+      $or: [
+        { date: today },
+        { checkOut: null },
+        { checkOut: { $exists: false } },
+      ],
+    }).sort({ checkIn: -1 });
+
+    if (!attendance || !attendance.checkIn) {
+      return res.status(404).json({ message: "No active check-in found to check out from." });
+    }
+
+    if (attendance.checkOut) {
+      return res.status(400).json({ message: "Already checked out for this shift." });
+    }
+
+    const checkInTime = new Date(attendance.checkIn).getTime();
+    const elapsedMs = Date.now() - checkInTime;
+    const isEarly = elapsedMs < SHIFT_DURATION_MS;
+
+    if (isEarly) {
+      const earlyConfirm = String(req.body.earlyConfirm || "").trim().toLowerCase();
+      if (earlyConfirm !== "confirm") {
+        return res.status(400).json({
+          message: "Early checkout requires typing 'confirm' to proceed.",
+          isEarly: true,
+          elapsedMs,
+          remainingMs: SHIFT_DURATION_MS - elapsedMs,
+          checkIn: attendance.checkIn,
+        });
+      }
+    }
+
+    attendance.checkOut = new Date();
+    await attendance.save();
+
+    // Emit attendance update
+    try {
+      const io = req.app.locals.io;
+      if (io) {
+        io.to(req.user.id.toString()).emit("attendance:update", {
+          user: req.user.id,
+          checkOut: attendance.checkOut,
+        });
         const userDoc = req.user;
         if (userDoc && userDoc.assignedAdmin) {
           io.to(userDoc.assignedAdmin.toString()).emit("attendance:update", {
@@ -80,8 +148,9 @@ router.post("/checkout", auth, async (req, res) => {
             checkOut: attendance.checkOut,
           });
         }
-      } catch (e) { }
-    }
+      }
+    } catch (e) { }
+
     res.json(attendance);
   } catch (err) {
     serverError(res, err, "attendance");
@@ -91,6 +160,7 @@ router.post("/checkout", auth, async (req, res) => {
 // Get attendance for user
 router.get("/", auth, async (req, res) => {
   try {
+    await autoCheckoutExpiredRecords({ user: req.user.id }, req.app.locals.io);
     const attendances = await Attendance.find({ user: req.user.id });
     res.json(attendances);
   } catch (err) {
@@ -114,6 +184,8 @@ router.get("/team", auth, roleAuth(["admin"]), async (req, res) => {
     const assignedUsers = await User.find(query);
     const userIds = assignedUsers.map((u) => u._id);
 
+    await autoCheckoutExpiredRecords({ user: { $in: userIds } }, req.app.locals.io);
+
     const attendances = await Attendance.find({
       user: { $in: userIds },
     }).populate("user", "name email role department");
@@ -126,6 +198,7 @@ router.get("/team", auth, roleAuth(["admin"]), async (req, res) => {
 // Get all attendance (superadmin)
 router.get("/all", auth, roleAuth(["superadmin"]), async (req, res) => {
   try {
+    await autoCheckoutExpiredRecords({}, req.app.locals.io);
     const attendances = await Attendance.find().populate(
       "user",
       "name email role department",
@@ -141,6 +214,8 @@ router.get("/admins", auth, roleAuth(["superadmin"]), async (req, res) => {
   try {
     const admins = await User.find({ role: "admin" });
     const adminIds = admins.map((a) => a._id);
+
+    await autoCheckoutExpiredRecords({ user: { $in: adminIds } }, req.app.locals.io);
 
     const attendances = await Attendance.find({
       user: { $in: adminIds },
@@ -472,7 +547,8 @@ router.put(
     } catch (err) {
       serverError(res, err, "attendance");
     }
-  },
+  }
 );
 
+router.autoCheckoutExpiredRecords = autoCheckoutExpiredRecords;
 module.exports = router;

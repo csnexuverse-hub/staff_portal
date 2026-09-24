@@ -19,10 +19,12 @@ router.get("/", auth, async (req, res) => {
       meetings = await Meeting.find({
         $or: [{ participants: req.user.id }, { createdBy: req.user.id }],
       })
+        .sort({ date: -1 })
         .populate("participants", "name email")
         .populate("createdBy", "name role");
     } else if (req.user.role === "superadmin") {
       meetings = await Meeting.find()
+        .sort({ date: -1 })
         .populate("participants", "name email")
         .populate("createdBy", "name role");
     } else {
@@ -30,6 +32,7 @@ router.get("/", auth, async (req, res) => {
       meetings = await Meeting.find({
         $or: [{ participants: req.user.id }, { createdBy: req.user.id }],
       })
+        .sort({ date: -1 })
         .populate("participants", "name email")
         .populate("createdBy", "name role");
     }
